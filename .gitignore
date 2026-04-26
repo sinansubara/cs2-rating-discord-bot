@@ -25,6 +25,9 @@ env/
 .coverage
 *.log
 
+# Local data
+data/
+
 # OS/Editor
 .DS_Store
 Thumbs.db

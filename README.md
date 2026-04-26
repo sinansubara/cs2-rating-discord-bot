@@ -11,14 +11,23 @@ approximate **HLTV Rating 2.0, 2.1, and ≈3.0** for any player.
 |---------|-------------|
 | `/rating <username>` | Rating for the player's **last match** |
 | `/rating <username> maps:5` | Average rating across last 5 maps |
+| `/card <username> maps:10` | Shareable player card summary |
 | `/matchrating <username> <match_id>` | Rating for a specific match ID |
 | `/analyze <username> maps:10` | Last N maps analysis: trend, consistency, role, best/worst map |
+| `/role <username> maps:20` | Role classifier with confidence |
 | `/compare <player_a> <player_b> maps:10` | Side-by-side comparison over recent maps |
+| `/teamcompare <p1> <p2> <p3> [p4] [p5]` | Team averages + balance snapshot |
+| `/rivalry <player_a> <player_b> maps:10` | Head-to-head over shared recent maps |
 | `/maps <username> maps:15` | Per-map rating breakdown (2.1 + KD) |
+| `/highlights <username> maps:10` | Best map + clutches + multi-kill highlights |
 | `/session <username> recent_maps:5 baseline_maps:20` | Detect hot/cold form vs baseline |
 | `/weeklyreport <username> maps:10` | Generate weekly report card instantly |
+| `/weeklygraph <username> maps:10` | Weekly trend sparklines for rating + ADR |
 | `/weeklysubscribe <username> [channel]` | Auto-post weekly report every Monday 09:00 UTC |
 | `/weeklyunsubscribe` | Disable weekly auto report |
+| `/alert <username> rating:1.20` | DM when rating crosses threshold |
+| `/alertlist` | List your active alerts |
+| `/alertremove <username>` | Remove alert(s) for a player |
 | `/formula` | Explains all formulas used |
 
 ---

@@ -3,27 +3,34 @@ Discord Cog — CS2 HLTV Rating Commands
 """
 
 from __future__ import annotations
-import os
+
 import asyncio
-import statistics
 import json
+import os
+import statistics
 from collections import defaultdict
 from datetime import datetime, timezone
+from typing import Any, Optional
+
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from typing import Optional, Any
 
 from utils.faceit import FaceitAPI
 from utils.rating import (
     PlayerMatchStats,
+    bar,
     calculate_rating_20,
     calculate_rating_21,
     calculate_rating_30_approx,
     rating_color,
     rating_label,
-    bar,
 )
+
+_ALERT_DIRECTIONS = [
+    app_commands.Choice(name="Above", value="above"),
+    app_commands.Choice(name="Below", value="below"),
+]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -94,6 +101,18 @@ def _consistency_score(ratings: list[float]) -> int:
     return max(0, min(100, int(round(score))))
 
 
+def _scale(value: float, lo: float, hi: float) -> float:
+    if hi - lo < 1e-9:
+        return 0.0
+    return max(0.0, min(1.0, (value - lo) / (hi - lo)))
+
+
+def _balance_score(value: float, center: float, span: float) -> float:
+    if span <= 0:
+        return 0.0
+    return max(0.0, 1.0 - abs(value - center) / span)
+
+
 def _role_profile(
     agg: PlayerMatchStats, avg_rating: float, n_maps: int
 ) -> tuple[str, str]:
@@ -112,6 +131,64 @@ def _role_profile(
     if avg_rating >= 1.1 and dpr <= 0.68:
         return "Star Rifler", "Above-average impact with efficient deaths."
     return "Balanced Rifler", "Even profile without a heavy role skew."
+
+
+def _role_profile_v2(
+    agg: PlayerMatchStats, avg_rating: float, n_maps: int
+) -> tuple[str, str, int]:
+    rounds = max(agg.total_rounds, 1)
+    kpr = agg.kills / rounds
+    dpr = agg.deaths / rounds
+    apr = agg.assists / rounds
+    adr = agg.adr
+    kast = agg.kast
+    clutch_per_map = (agg.clutch_1v1 + agg.clutch_1v2) / max(n_maps, 1)
+    impact = calculate_rating_21(agg)["impact"]
+
+    scores = {
+        "Entry / Fragger": 0.4 * _scale(kpr, 0.65, 0.95)
+        + 0.3 * _scale(adr, 70, 95)
+        + 0.2 * _scale(impact, 0.85, 1.35)
+        + 0.1 * _scale(1 - dpr, 0.2, 0.5),
+        "Support / Trader": 0.4 * _scale(apr, 0.12, 0.25)
+        + 0.3 * _scale(kast, 65, 82)
+        + 0.2 * _scale(adr, 65, 85)
+        + 0.1 * _scale(1 - dpr, 0.2, 0.5),
+        "Anchor / Closer": 0.4 * _scale(1 - dpr, 0.25, 0.5)
+        + 0.3 * _scale(kast, 70, 84)
+        + 0.2 * _scale(clutch_per_map, 0.1, 0.6)
+        + 0.1 * _scale(adr, 65, 85),
+        "Star Rifler": 0.5 * _scale(avg_rating, 1.05, 1.35)
+        + 0.2 * _scale(impact, 0.85, 1.35)
+        + 0.2 * _scale(adr, 70, 95)
+        + 0.1 * _scale(1 - dpr, 0.25, 0.45),
+        "Balanced Rifler": 0.4 * _balance_score(kpr, 0.70, 0.20)
+        + 0.3 * _balance_score(adr, 75, 20)
+        + 0.3 * _balance_score(kast, 72, 12),
+    }
+
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    role, top_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    confidence = int(round(50 + (top_score - second_score) * 60 + top_score * 40))
+    confidence = max(30, min(100, confidence))
+
+    if role == "Entry / Fragger":
+        reason = f"KPR {kpr:.2f}, ADR {adr:.1f}, Impact {impact:.2f}."
+    elif role == "Support / Trader":
+        reason = f"APR {apr:.2f}, KAST {kast:.1f}%, ADR {adr:.1f}."
+    elif role == "Anchor / Closer":
+        reason = (
+            f"Low DPR {dpr:.2f}, KAST {kast:.1f}%, clutches {clutch_per_map:.2f}/map."
+        )
+    elif role == "Star Rifler":
+        reason = f"Avg 2.1 {avg_rating:.2f} with Impact {impact:.2f}."
+    else:
+        reason = (
+            f"Balanced output across KPR {kpr:.2f} / ADR {adr:.1f} / KAST {kast:.1f}%."
+        )
+
+    return role, reason, confidence
 
 
 def _avg_rating(rows: list[dict[str, Any]]) -> float:
@@ -151,6 +228,37 @@ def _save_weekly_subscriptions(data: dict[str, dict[str, Any]]):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+
+
+def _alert_store_path() -> str:
+    return os.path.join(_bot_root_dir(), "data", "alerts.json")
+
+
+def _load_alerts() -> list[dict[str, Any]]:
+    path = _alert_store_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+
+def _save_alerts(data: list[dict[str, Any]]):
+    path = _alert_store_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def _alert_state(current: float, threshold: float, direction: str) -> str:
+    if direction == "below":
+        return "below" if current <= threshold else "above"
+    return "above" if current >= threshold else "below"
 
 
 def parse_player_stats(ps: dict, total_rounds: int) -> PlayerMatchStats:
@@ -360,10 +468,114 @@ class StatsCog(commands.Cog):
             _load_weekly_subscriptions()
         )
         self._weekly_last_sent: dict[str, str] = {}
+        self.alerts: list[dict[str, Any]] = _load_alerts()
         self.weekly_report_loop.start()
+        self.alert_loop.start()
+
+    async def _cmd_role(
+        self, interaction: discord.Interaction, username: str, maps: int
+    ):
+        player_id, nickname = await self._resolve_player(username)
+        rows = await self._collect_recent_player_maps(player_id, maps)
+        if not rows:
+            await interaction.followup.send(
+                f"❌  No recent CS2 map stats found for `{nickname}`."
+            )
+            return
+
+        agg = self._aggregate_rows(rows)
+        avg21 = calculate_rating_21(agg)["rating"]
+        role, reason, confidence = _role_profile_v2(agg, avg21, len(rows))
+
+        rounds = max(agg.total_rounds, 1)
+        kpr = agg.kills / rounds
+        dpr = agg.deaths / rounds
+        apr = agg.assists / rounds
+
+        embed = discord.Embed(
+            title=f"🧩  Role · {nickname}",
+            description=f"Last {len(rows)} map(s) · FACEIT CS2",
+            color=rating_color(avg21),
+        )
+        embed.add_field(
+            name="Role Profile",
+            value=(f"**{role}**  ·  Confidence `{confidence}/100`\n{reason}"),
+            inline=False,
+        )
+        embed.add_field(
+            name="Per-Round",
+            value=(f"KPR `{kpr:.2f}`\nDPR `{dpr:.2f}`\nAPR `{apr:.2f}`"),
+            inline=True,
+        )
+        embed.add_field(
+            name="Averages",
+            value=(f"2.1 `{avg21:.2f}`\nADR `{agg.adr:.1f}`\nKAST `{agg.kast:.1f}%`"),
+            inline=True,
+        )
+        await interaction.followup.send(embed=embed)
+
+    async def _cmd_highlights(
+        self, interaction: discord.Interaction, username: str, maps: int
+    ):
+        player_id, nickname = await self._resolve_player(username)
+        rows = await self._collect_recent_player_maps(player_id, maps)
+        if not rows:
+            await interaction.followup.send(
+                f"❌  No recent CS2 map stats found for `{nickname}`."
+            )
+            return
+
+        best = max(rows, key=lambda r: r["r21"])
+        impact_best = max(rows, key=lambda r: r["r21_data"]["impact"])
+        clutch_best = max(
+            rows,
+            key=lambda r: r["stats"].clutch_1v1 + r["stats"].clutch_1v2,
+        )
+
+        total_1v1 = sum(r["stats"].clutch_1v1 for r in rows)
+        total_1v2 = sum(r["stats"].clutch_1v2 for r in rows)
+        total_3k = sum(r["stats"].triple_kills for r in rows)
+        total_4k = sum(r["stats"].quad_kills for r in rows)
+        total_5k = sum(r["stats"].penta_kills for r in rows)
+
+        def _map_line(row: dict[str, Any]) -> str:
+            s = row["stats"]
+            kd = s.kills / max(s.deaths, 1)
+            adr = row["r21_data"]["adr"]
+            return (
+                f"**{row['map']}** {row['score']} · "
+                f"r2.1 `{row['r21']:.2f}` · KD `{kd:.2f}` · ADR `{adr}`"
+            )
+
+        embed = discord.Embed(
+            title=f"✨  Highlights · {nickname}",
+            description=f"Last {len(rows)} map(s) · FACEIT CS2",
+            color=rating_color(_avg_rating(rows)),
+        )
+        embed.add_field(name="Best Map", value=_map_line(best), inline=False)
+        embed.add_field(name="Impact Map", value=_map_line(impact_best), inline=False)
+        if clutch_best["stats"].clutch_1v1 or clutch_best["stats"].clutch_1v2:
+            embed.add_field(
+                name="Clutch Highlight",
+                value=(
+                    f"**{clutch_best['map']}** · 1v1 `{clutch_best['stats'].clutch_1v1}`  "
+                    f"1v2 `{clutch_best['stats'].clutch_1v2}`"
+                ),
+                inline=False,
+            )
+        embed.add_field(
+            name="Multi-kills & Clutches",
+            value=(
+                f"3K `{total_3k}`  ·  4K `{total_4k}`  ·  5K `{total_5k}`\n"
+                f"1v1 `{total_1v1}`  ·  1v2 `{total_1v2}`"
+            ),
+            inline=False,
+        )
+        await interaction.followup.send(embed=embed)
 
     async def cog_unload(self):
         self.weekly_report_loop.cancel()
+        self.alert_loop.cancel()
         await self.faceit.close()
 
     # ── /rating ───────────────────────────────────────────────────────────────
@@ -386,6 +598,29 @@ class StatsCog(commands.Cog):
         maps = max(1, min(maps or 1, 15))
         try:
             await self._cmd_rating(interaction, username, maps)
+        except Exception as exc:
+            await interaction.followup.send(f"❌  {exc}", ephemeral=True)
+
+    # ── /card ───────────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="card",
+        description="Shareable player card summary",
+    )
+    @app_commands.describe(
+        username="FACEIT nickname",
+        maps="Number of recent maps to include (3–20, default 10)",
+    )
+    async def card(
+        self,
+        interaction: discord.Interaction,
+        username: str,
+        maps: Optional[int] = 10,
+    ):
+        await interaction.response.defer(thinking=True)
+        maps = max(3, min(maps or 10, 20))
+        try:
+            await self._cmd_card(interaction, username, maps)
         except Exception as exc:
             await interaction.followup.send(f"❌  {exc}", ephemeral=True)
 
@@ -434,6 +669,29 @@ class StatsCog(commands.Cog):
         except Exception as exc:
             await interaction.followup.send(f"❌  {exc}", ephemeral=True)
 
+    # ── /role ───────────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="role",
+        description="Role classifier with confidence",
+    )
+    @app_commands.describe(
+        username="FACEIT nickname",
+        maps="Number of recent maps to analyze (5–30, default 20)",
+    )
+    async def role(
+        self,
+        interaction: discord.Interaction,
+        username: str,
+        maps: Optional[int] = 20,
+    ):
+        await interaction.response.defer(thinking=True)
+        maps = max(5, min(maps or 20, 30))
+        try:
+            await self._cmd_role(interaction, username, maps)
+        except Exception as exc:
+            await interaction.followup.send(f"❌  {exc}", ephemeral=True)
+
     # ── /compare ──────────────────────────────────────────────────────────────
 
     @app_commands.command(
@@ -459,6 +717,66 @@ class StatsCog(commands.Cog):
         except Exception as exc:
             await interaction.followup.send(f"❌  {exc}", ephemeral=True)
 
+    # ── /teamcompare ────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="teamcompare",
+        description="Team averages + balance snapshot",
+    )
+    @app_commands.describe(
+        username_a="FACEIT nickname (player 1)",
+        username_b="FACEIT nickname (player 2)",
+        username_c="FACEIT nickname (player 3)",
+        username_d="FACEIT nickname (player 4, optional)",
+        username_e="FACEIT nickname (player 5, optional)",
+        maps="Number of recent maps per player (3–20, default 10)",
+    )
+    async def teamcompare(
+        self,
+        interaction: discord.Interaction,
+        username_a: str,
+        username_b: str,
+        username_c: str,
+        username_d: Optional[str] = None,
+        username_e: Optional[str] = None,
+        maps: Optional[int] = 10,
+    ):
+        await interaction.response.defer(thinking=True)
+        maps = max(3, min(maps or 10, 20))
+        try:
+            await self._cmd_teamcompare(
+                interaction,
+                [username_a, username_b, username_c, username_d, username_e],
+                maps,
+            )
+        except Exception as exc:
+            await interaction.followup.send(f"❌  {exc}", ephemeral=True)
+
+    # ── /rivalry ────────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="rivalry",
+        description="Head-to-head over shared recent maps",
+    )
+    @app_commands.describe(
+        username_a="First FACEIT nickname",
+        username_b="Second FACEIT nickname",
+        maps="Number of shared maps to include (3–15, default 10)",
+    )
+    async def rivalry(
+        self,
+        interaction: discord.Interaction,
+        username_a: str,
+        username_b: str,
+        maps: Optional[int] = 10,
+    ):
+        await interaction.response.defer(thinking=True)
+        maps = max(3, min(maps or 10, 15))
+        try:
+            await self._cmd_rivalry(interaction, username_a, username_b, maps)
+        except Exception as exc:
+            await interaction.followup.send(f"❌  {exc}", ephemeral=True)
+
     # ── /maps ─────────────────────────────────────────────────────────────────
 
     @app_commands.command(
@@ -479,6 +797,29 @@ class StatsCog(commands.Cog):
         maps = max(3, min(maps or 15, 30))
         try:
             await self._cmd_maps(interaction, username, maps)
+        except Exception as exc:
+            await interaction.followup.send(f"❌  {exc}", ephemeral=True)
+
+    # ── /highlights ─────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="highlights",
+        description="Best map + clutches + multi-kill highlights",
+    )
+    @app_commands.describe(
+        username="FACEIT nickname",
+        maps="Number of recent maps to include (3–20, default 10)",
+    )
+    async def highlights(
+        self,
+        interaction: discord.Interaction,
+        username: str,
+        maps: Optional[int] = 10,
+    ):
+        await interaction.response.defer(thinking=True)
+        maps = max(3, min(maps or 10, 20))
+        try:
+            await self._cmd_highlights(interaction, username, maps)
         except Exception as exc:
             await interaction.followup.send(f"❌  {exc}", ephemeral=True)
 
@@ -529,6 +870,29 @@ class StatsCog(commands.Cog):
         try:
             embed = await self._build_weekly_report_embed(username, maps)
             await interaction.followup.send(embed=embed)
+        except Exception as exc:
+            await interaction.followup.send(f"❌  {exc}", ephemeral=True)
+
+    # ── /weeklygraph ────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="weeklygraph",
+        description="Weekly trend sparklines for rating + ADR",
+    )
+    @app_commands.describe(
+        username="FACEIT nickname",
+        maps="Number of recent maps to include (default 10)",
+    )
+    async def weeklygraph(
+        self,
+        interaction: discord.Interaction,
+        username: str,
+        maps: Optional[int] = 10,
+    ):
+        await interaction.response.defer(thinking=True)
+        maps = max(5, min(maps or 10, 30))
+        try:
+            await self._cmd_weeklygraph(interaction, username, maps)
         except Exception as exc:
             await interaction.followup.send(f"❌  {exc}", ephemeral=True)
 
@@ -608,6 +972,68 @@ class StatsCog(commands.Cog):
             "ℹ️  Weekly report was not configured for this server.", ephemeral=True
         )
 
+    # ── /alert ──────────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="alert",
+        description="DM when rating crosses a threshold",
+    )
+    @app_commands.describe(
+        username="FACEIT nickname",
+        rating="Threshold for Rating 2.1",
+        direction="Alert when rating goes above or below",
+        maps="Number of recent maps to average (3–20, default 5)",
+    )
+    @app_commands.choices(direction=_ALERT_DIRECTIONS)
+    async def alert(
+        self,
+        interaction: discord.Interaction,
+        username: str,
+        rating: float,
+        direction: Optional[app_commands.Choice[str]] = None,
+        maps: Optional[int] = 5,
+    ):
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        maps = max(3, min(maps or 5, 20))
+        direction_value = direction.value if direction else "above"
+        try:
+            await self._cmd_alert(interaction, username, rating, direction_value, maps)
+        except Exception as exc:
+            await interaction.followup.send(f"❌  {exc}", ephemeral=True)
+
+    # ── /alertlist ──────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="alertlist",
+        description="List your active rating alerts",
+    )
+    async def alertlist(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        await self._cmd_alertlist(interaction)
+
+    # ── /alertremove ────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="alertremove",
+        description="Remove rating alert(s) for a player",
+    )
+    @app_commands.describe(
+        username="FACEIT nickname",
+        rating="Optional threshold to remove",
+        direction="Optional direction to remove",
+    )
+    @app_commands.choices(direction=_ALERT_DIRECTIONS)
+    async def alertremove(
+        self,
+        interaction: discord.Interaction,
+        username: str,
+        rating: Optional[float] = None,
+        direction: Optional[app_commands.Choice[str]] = None,
+    ):
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        direction_value = direction.value if direction else None
+        await self._cmd_alertremove(interaction, username, rating, direction_value)
+
     # ── /formula ──────────────────────────────────────────────────────────────
 
     @app_commands.command(
@@ -672,11 +1098,15 @@ class StatsCog(commands.Cog):
     # INTERNAL HELPERS
     # ──────────────────────────────────────────────────────────────────────────
 
-    async def _resolve_player(self, username: str) -> tuple[str, str]:
-        """Return (player_id, resolved_nickname) or raise."""
+    async def _get_player_info(self, username: str) -> dict[str, Any]:
         player = await self.faceit.get_player(username)
         if not player:
             raise ValueError(f"Player `{username}` not found on FACEIT (CS2).")
+        return player
+
+    async def _resolve_player(self, username: str) -> tuple[str, str]:
+        """Return (player_id, resolved_nickname) or raise."""
+        player = await self._get_player_info(username)
         return player["player_id"], player.get("nickname", username)
 
     async def _cmd_rating(
@@ -754,8 +1184,75 @@ class StatsCog(commands.Cog):
                         "score": score,
                         "stats": s,
                         "r21": r21["rating"],
+                        "r21_data": r21,
                     }
                 )
+
+        return rows
+
+    async def _collect_duo_maps(
+        self,
+        player_a: str,
+        player_b: str,
+        match_ids: list[str],
+        limit_maps: int,
+    ) -> list[dict[str, Any]]:
+        if not match_ids:
+            return []
+
+        sem = asyncio.Semaphore(5)
+
+        async def _fetch(mid: str):
+            async with sem:
+                try:
+                    return mid, await self.faceit.get_match_stats(mid)
+                except Exception:
+                    return mid, None
+
+        fetched = await asyncio.gather(*[_fetch(mid) for mid in match_ids])
+        rows: list[dict[str, Any]] = []
+
+        for mid, stats_data in fetched:
+            if not stats_data:
+                continue
+            for round_data in stats_data.get("rounds", []):
+                rs = round_data.get("round_stats", {})
+                score = rs.get("Score", "12-12")
+                total_rds = _parse_score(score)
+
+                raw_a = None
+                raw_b = None
+                for team in round_data.get("teams", []):
+                    for p in team.get("players", []):
+                        if p.get("player_id") == player_a:
+                            raw_a = p
+                        elif p.get("player_id") == player_b:
+                            raw_b = p
+                    if raw_a and raw_b:
+                        break
+
+                if not raw_a or not raw_b:
+                    continue
+
+                s_a = parse_player_stats(raw_a.get("player_stats", {}), total_rds)
+                s_b = parse_player_stats(raw_b.get("player_stats", {}), total_rds)
+                r21_a = calculate_rating_21(s_a)
+                r21_b = calculate_rating_21(s_b)
+
+                rows.append(
+                    {
+                        "match_id": mid,
+                        "map": _map_label(rs.get("Map", "Unknown")),
+                        "score": score,
+                        "a_stats": s_a,
+                        "b_stats": s_b,
+                        "a_r21": r21_a["rating"],
+                        "b_r21": r21_b["rating"],
+                    }
+                )
+
+                if len(rows) >= limit_maps:
+                    return rows
 
         return rows
 
@@ -963,6 +1460,155 @@ class StatsCog(commands.Cog):
         )
         await interaction.followup.send(embed=embed)
 
+    async def _cmd_teamcompare(
+        self,
+        interaction: discord.Interaction,
+        usernames: list[Optional[str]],
+        maps: int,
+    ):
+        names = [u.strip() for u in usernames if u and u.strip()]
+        if len(names) < 3:
+            await interaction.followup.send(
+                "❌  Provide at least 3 players for team compare."
+            )
+            return
+
+        async def _fetch(name: str) -> dict[str, Any]:
+            player_id, nickname = await self._resolve_player(name)
+            rows = await self._collect_recent_player_maps(player_id, maps)
+            if not rows:
+                raise ValueError(f"No recent CS2 map stats found for `{nickname}`.")
+            agg = self._aggregate_rows(rows)
+            r21 = calculate_rating_21(agg)["rating"]
+            kd = agg.kills / max(agg.deaths, 1)
+            return {
+                "name": nickname,
+                "r21": r21,
+                "kd": kd,
+                "adr": agg.adr,
+                "kast": agg.kast,
+                "maps": len(rows),
+            }
+
+        try:
+            results = await asyncio.gather(*[_fetch(n) for n in names])
+        except Exception as exc:
+            await interaction.followup.send(f"❌  {exc}")
+            return
+
+        team_avg = sum(r["r21"] for r in results) / len(results)
+        team_adr = sum(r["adr"] for r in results) / len(results)
+        team_kast = sum(r["kast"] for r in results) / len(results)
+        spread = max(r["r21"] for r in results) - min(r["r21"] for r in results)
+
+        lines = []
+        for r in sorted(results, key=lambda x: x["r21"], reverse=True):
+            lines.append(
+                f"{r['name']:<12}  r2.1 {r['r21']:.2f}  KD {r['kd']:.2f}  ADR {r['adr']:.1f}"
+            )
+
+        embed = discord.Embed(
+            title="🧪  Team Compare",
+            description=f"Per-player averages over last {maps} map(s)",
+            color=rating_color(team_avg),
+        )
+        embed.add_field(
+            name="Players",
+            value="```\n" + "\n".join(lines) + "\n```",
+            inline=False,
+        )
+        embed.add_field(
+            name="Team Snapshot",
+            value=(
+                f"Avg 2.1 `{team_avg:.2f}`\n"
+                f"Avg ADR `{team_adr:.1f}`\n"
+                f"Avg KAST `{team_kast:.1f}%`\n"
+                f"Balance (spread) `{spread:.2f}`"
+            ),
+            inline=False,
+        )
+        await interaction.followup.send(embed=embed)
+
+    async def _cmd_rivalry(
+        self,
+        interaction: discord.Interaction,
+        username_a: str,
+        username_b: str,
+        maps: int,
+    ):
+        p1, n1 = await self._resolve_player(username_a)
+        p2, n2 = await self._resolve_player(username_b)
+
+        history_limit = max(20, maps * 3)
+        h1, h2 = await asyncio.gather(
+            self.faceit.get_match_history(p1, limit=history_limit),
+            self.faceit.get_match_history(p2, limit=history_limit),
+        )
+        if not h1 or not h1.get("items") or not h2 or not h2.get("items"):
+            await interaction.followup.send("❌  Not enough shared match history.")
+            return
+
+        ids1 = [it.get("match_id") for it in h1["items"] if it.get("match_id")]
+        ids2 = {it.get("match_id") for it in h2["items"] if it.get("match_id")}
+        shared_ids = [mid for mid in ids1 if mid in ids2]
+        if not shared_ids:
+            await interaction.followup.send("❌  No shared matches found.")
+            return
+
+        rows = await self._collect_duo_maps(p1, p2, shared_ids, maps)
+        if not rows:
+            await interaction.followup.send("❌  No shared map stats found.")
+            return
+
+        rows_a = [{"stats": r["a_stats"], "r21": r["a_r21"]} for r in rows]
+        rows_b = [{"stats": r["b_stats"], "r21": r["b_r21"]} for r in rows]
+
+        agg_a = self._aggregate_rows(rows_a)
+        agg_b = self._aggregate_rows(rows_b)
+        r1 = calculate_rating_21(agg_a)["rating"]
+        r2 = calculate_rating_21(agg_b)["rating"]
+
+        kd1 = agg_a.kills / max(agg_a.deaths, 1)
+        kd2 = agg_b.kills / max(agg_b.deaths, 1)
+
+        best_a = max(rows, key=lambda r: r["a_r21"])
+        best_b = max(rows, key=lambda r: r["b_r21"])
+
+        embed = discord.Embed(
+            title=f"⚔️  Rivalry · {n1} vs {n2}",
+            description=f"Shared maps analyzed: {len(rows)}",
+            color=0x9B59B6,
+        )
+        embed.add_field(
+            name=n1,
+            value=(
+                f"2.1 `{r1:.2f}`\n"
+                f"K/D `{kd1:.2f}`\n"
+                f"ADR `{agg_a.adr:.1f}`\n"
+                f"KAST `{agg_a.kast:.1f}%`"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name=n2,
+            value=(
+                f"2.1 `{r2:.2f}`\n"
+                f"K/D `{kd2:.2f}`\n"
+                f"ADR `{agg_b.adr:.1f}`\n"
+                f"KAST `{agg_b.kast:.1f}%`"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Best Map",
+            value=(
+                f"{n1}: **{best_a['map']}** `{best_a['a_r21']:.2f}`\n"
+                f"{n2}: **{best_b['map']}** `{best_b['b_r21']:.2f}`"
+            ),
+            inline=False,
+        )
+        await interaction.followup.send(embed=embed)
+
     async def _cmd_maps(
         self, interaction: discord.Interaction, username: str, maps: int
     ):
@@ -1068,6 +1714,161 @@ class StatsCog(commands.Cog):
         )
         await interaction.followup.send(embed=embed)
 
+    async def _cmd_weeklygraph(
+        self, interaction: discord.Interaction, username: str, maps: int
+    ):
+        player_id, nickname = await self._resolve_player(username)
+        rows = await self._collect_recent_player_maps(player_id, maps)
+        if not rows:
+            await interaction.followup.send(
+                f"❌  No recent CS2 map stats found for `{nickname}`."
+            )
+            return
+
+        rating_series = list(reversed([r["r21"] for r in rows]))
+        adr_series = list(reversed([r["r21_data"]["adr"] for r in rows]))
+        rating_spark = _sparkline(rating_series)
+        adr_spark = _sparkline(adr_series)
+
+        avg_rating = sum(rating_series) / len(rating_series)
+        avg_adr = sum(adr_series) / len(adr_series)
+
+        embed = discord.Embed(
+            title=f"📈  Weekly Graph · {nickname}",
+            description=f"Last {len(rows)} map(s) · FACEIT CS2",
+            color=rating_color(avg_rating),
+        )
+        embed.add_field(
+            name="Rating 2.1",
+            value=f"Avg `{avg_rating:.2f}`\n`{rating_spark}`",
+            inline=False,
+        )
+        embed.add_field(
+            name="ADR",
+            value=f"Avg `{avg_adr:.1f}`\n`{adr_spark}`",
+            inline=False,
+        )
+        await interaction.followup.send(embed=embed)
+
+    async def _cmd_alert(
+        self,
+        interaction: discord.Interaction,
+        username: str,
+        threshold: float,
+        direction: str,
+        maps: int,
+    ):
+        player_id, nickname = await self._resolve_player(username)
+        rows = await self._collect_recent_player_maps(player_id, maps)
+        if not rows:
+            await interaction.followup.send(
+                f"❌  No recent CS2 map stats found for `{nickname}`.",
+                ephemeral=True,
+            )
+            return
+
+        avg = _avg_rating(rows[:maps])
+        state = _alert_state(avg, threshold, direction)
+
+        user_id = str(interaction.user.id)
+        replaced = False
+        for alert in self.alerts:
+            if (
+                alert.get("user_id") == user_id
+                and str(alert.get("username", "")).lower() == nickname.lower()
+                and alert.get("direction") == direction
+            ):
+                alert["threshold"] = round(threshold, 2)
+                alert["maps"] = maps
+                alert["last_state"] = state
+                alert["last_avg"] = round(avg, 2)
+                replaced = True
+                break
+
+        if not replaced:
+            self.alerts.append(
+                {
+                    "user_id": user_id,
+                    "username": nickname,
+                    "threshold": round(threshold, 2),
+                    "direction": direction,
+                    "maps": maps,
+                    "last_state": state,
+                    "last_avg": round(avg, 2),
+                }
+            )
+
+        _save_alerts(self.alerts)
+
+        await interaction.followup.send(
+            f"✅  Alert set for `{nickname}` when rating goes **{direction}** `{threshold:.2f}`. "
+            f"Current avg over {maps} map(s): `{avg:.2f}`.",
+            ephemeral=True,
+        )
+
+    async def _cmd_alertlist(self, interaction: discord.Interaction):
+        user_id = str(interaction.user.id)
+        alerts = [a for a in self.alerts if a.get("user_id") == user_id]
+        if not alerts:
+            await interaction.followup.send("ℹ️  No active alerts.", ephemeral=True)
+            return
+
+        lines = []
+        for a in alerts:
+            lines.append(
+                f"{a.get('username')}  {a.get('direction')} {a.get('threshold')}  "
+                f"maps:{a.get('maps')}  last:{a.get('last_avg', '—')}"
+            )
+
+        embed = discord.Embed(
+            title="🔔  Your Alerts",
+            description="```\n" + "\n".join(lines) + "\n```",
+            color=0xF1C40F,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def _cmd_alertremove(
+        self,
+        interaction: discord.Interaction,
+        username: str,
+        threshold: Optional[float],
+        direction: Optional[str],
+    ):
+        user_id = str(interaction.user.id)
+        removed = 0
+        remaining = []
+
+        for alert in self.alerts:
+            if alert.get("user_id") != user_id:
+                remaining.append(alert)
+                continue
+            if str(alert.get("username", "")).lower() != username.lower():
+                remaining.append(alert)
+                continue
+            if (
+                threshold is not None
+                and abs(float(alert.get("threshold", 0)) - threshold) > 1e-6
+            ):
+                remaining.append(alert)
+                continue
+            if direction and alert.get("direction") != direction:
+                remaining.append(alert)
+                continue
+            removed += 1
+
+        self.alerts = remaining
+        if removed:
+            _save_alerts(self.alerts)
+            await interaction.followup.send(
+                f"✅  Removed {removed} alert(s) for `{username}`.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                f"ℹ️  No matching alerts found for `{username}`.",
+                ephemeral=True,
+            )
+
     async def _build_weekly_report_embed(
         self, username: str, maps: int = 10
     ) -> discord.Embed:
@@ -1094,6 +1895,9 @@ class StatsCog(commands.Cog):
 
         kdr = agg.kills / max(agg.deaths, 1)
         spark = _sparkline(list(reversed([r["r21"] for r in rows[:10]])))
+        adr_spark = _sparkline(
+            list(reversed([r["r21_data"]["adr"] for r in rows[:10]]))
+        )
 
         embed = discord.Embed(
             title=f"🗓️ Weekly Report · {nickname}",
@@ -1120,6 +1924,11 @@ class StatsCog(commands.Cog):
                 f"Trend: `{spark}`"
             ),
             inline=True,
+        )
+        embed.add_field(
+            name="Sparklines",
+            value=(f"Rating: `{spark}`\nADR:    `{adr_spark}`"),
+            inline=False,
         )
         embed.set_footer(text="Auto report runs Mondays 09:00 UTC when subscribed.")
         return embed
@@ -1155,6 +1964,72 @@ class StatsCog(commands.Cog):
 
     @weekly_report_loop.before_loop
     async def _before_weekly_report_loop(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=30)
+    async def alert_loop(self):
+        if not self.alerts:
+            return
+
+        updated = False
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for alert in self.alerts:
+            grouped[str(alert.get("username", ""))].append(alert)
+
+        for username, alerts in grouped.items():
+            if not username:
+                continue
+            try:
+                player = await self._get_player_info(username)
+            except Exception:
+                continue
+
+            player_id = player["player_id"]
+            nickname = player.get("nickname", username)
+
+            max_maps = max(int(a.get("maps", 5)) for a in alerts)
+            rows = await self._collect_recent_player_maps(player_id, max_maps)
+            if not rows:
+                continue
+
+            for alert in alerts:
+                maps = int(alert.get("maps", 5))
+                sample = rows[:maps]
+                if not sample:
+                    continue
+
+                threshold = float(alert.get("threshold", 0))
+                direction = str(alert.get("direction", "above"))
+                avg = _avg_rating(sample)
+                state = _alert_state(avg, threshold, direction)
+                prev_state = alert.get("last_state")
+
+                if prev_state and state != prev_state:
+                    try:
+                        user_id = int(alert.get("user_id", "0"))
+                        if user_id:
+                            user = self.bot.get_user(user_id)
+                            if user is None:
+                                user = await self.bot.fetch_user(user_id)
+                            await user.send(
+                                f"🔔 Alert: {nickname} average 2.1 rating over last {maps} map(s) "
+                                f"is `{avg:.2f}`, now **{state}** `{threshold:.2f}`."
+                            )
+                    except Exception:
+                        pass
+
+                if state != prev_state:
+                    alert["last_state"] = state
+                    updated = True
+
+                alert["last_avg"] = round(avg, 2)
+                updated = True
+
+        if updated:
+            _save_alerts(self.alerts)
+
+    @alert_loop.before_loop
+    async def _before_alert_loop(self):
         await self.bot.wait_until_ready()
 
     async def _send_match(
@@ -1225,13 +2100,84 @@ class StatsCog(commands.Cog):
 
         match_id_set = set(requested_match_ids)
         filtered_rows = [r for r in rows if r["match_id"] in match_id_set]
+
         if not filtered_rows:
             await interaction.followup.send("❌  Could not retrieve stats for any map.")
             return
 
         agg_stats = self._aggregate_rows(filtered_rows)
-
         embed = build_summary_embed(username, len(filtered_rows), agg_stats)
+        await interaction.followup.send(embed=embed)
+
+    async def _cmd_card(
+        self, interaction: discord.Interaction, username: str, maps: int
+    ):
+        player = await self._get_player_info(username)
+        player_id = player["player_id"]
+        nickname = player.get("nickname", username)
+
+        rows = await self._collect_recent_player_maps(player_id, maps)
+        if not rows:
+            await interaction.followup.send(
+                f"❌  No recent CS2 map stats found for `{nickname}`."
+            )
+            return
+
+        agg = self._aggregate_rows(rows)
+        r20 = calculate_rating_20(agg)
+        r21 = calculate_rating_21(agg)
+        r30 = calculate_rating_30_approx(agg)
+        kd = agg.kills / max(agg.deaths, 1)
+
+        rating_spark = _sparkline(list(reversed([r["r21"] for r in rows])))
+        adr_spark = _sparkline(list(reversed([r["r21_data"]["adr"] for r in rows])))
+        best = max(rows, key=lambda r: r["r21"])
+
+        embed = discord.Embed(
+            title=f"🪪  Player Card · {nickname}",
+            description=(
+                f"Snapshot from last {len(rows)} map(s)  ·  {rating_label(r21['rating'])}"
+            ),
+            color=rating_color(r21["rating"]),
+        )
+        faceit_url = player.get("faceit_url")
+        if isinstance(faceit_url, str) and faceit_url:
+            embed.url = faceit_url
+        avatar = player.get("avatar")
+        if isinstance(avatar, str) and avatar:
+            embed.set_thumbnail(url=avatar)
+
+        embed.add_field(
+            name="🏆  Ratings",
+            value=(
+                "```\n"
+                f"2.0  {r20['rating']:.2f}\n"
+                f"2.1  {r21['rating']:.2f}\n"
+                f"≈3.0 {r30['rating']:.2f}\n"
+                "```"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="📈  Core",
+            value=(
+                f"K/D `{kd:.2f}`\n"
+                f"ADR `{r21['adr']}`\n"
+                f"KAST `{r21['kast']}%`\n"
+                f"HS% `{agg.hs_pct:.0f}%`"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="📊  Trends",
+            value=(
+                f"Rating `{rating_spark}`\n"
+                f"ADR    `{adr_spark}`\n"
+                f"Best   **{best['map']}** `{best['r21']:.2f}`"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Shareable snapshot from recent FACEIT CS2 maps.")
         await interaction.followup.send(embed=embed)
 
 
