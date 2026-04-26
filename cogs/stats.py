@@ -30,6 +30,7 @@ from utils.rating import (
 # STAT PARSING
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _safe_int(d: dict, *keys, default: int = 0) -> int:
     for k in keys:
         v = d.get(k)
@@ -39,6 +40,7 @@ def _safe_int(d: dict, *keys, default: int = 0) -> int:
             except (ValueError, TypeError):
                 pass
     return default
+
 
 def _safe_float(d: dict, *keys, default: float = 0.0) -> float:
     for k in keys:
@@ -50,6 +52,7 @@ def _safe_float(d: dict, *keys, default: float = 0.0) -> float:
                 pass
     return default
 
+
 def _parse_score(score_str: str) -> int:
     """Return total rounds from a score string like '13:5' or '16-8'."""
     try:
@@ -58,11 +61,13 @@ def _parse_score(score_str: str) -> int:
     except Exception:
         return 24
 
+
 def _map_label(raw: str) -> str:
     if not raw:
         return "Unknown"
     name = raw.replace("de_", "").replace("workshop/", "")
     return name.replace("_", " ").title()
+
 
 def _sparkline(values: list[float]) -> str:
     if not values:
@@ -77,6 +82,7 @@ def _sparkline(values: list[float]) -> str:
         out.append(blocks[max(0, min(len(blocks) - 1, idx))])
     return "".join(out)
 
+
 def _consistency_score(ratings: list[float]) -> int:
     if len(ratings) < 2:
         return 100
@@ -87,8 +93,10 @@ def _consistency_score(ratings: list[float]) -> int:
     score = 100 - cv * 120
     return max(0, min(100, int(round(score))))
 
-def _role_profile(agg: PlayerMatchStats, avg_rating: float,
-                  n_maps: int) -> tuple[str, str]:
+
+def _role_profile(
+    agg: PlayerMatchStats, avg_rating: float, n_maps: int
+) -> tuple[str, str]:
     rounds = max(agg.total_rounds, 1)
     kpr = agg.kills / rounds
     dpr = agg.deaths / rounds
@@ -105,19 +113,24 @@ def _role_profile(agg: PlayerMatchStats, avg_rating: float,
         return "Star Rifler", "Above-average impact with efficient deaths."
     return "Balanced Rifler", "Even profile without a heavy role skew."
 
+
 def _avg_rating(rows: list[dict[str, Any]]) -> float:
     if not rows:
         return 0.0
     return sum(r["r21"] for r in rows) / len(rows)
 
+
 def _consistency_rows(rows: list[dict[str, Any]]) -> int:
     return _consistency_score([r["r21"] for r in rows])
+
 
 def _bot_root_dir() -> str:
     return os.path.dirname(os.path.dirname(__file__))
 
+
 def _weekly_store_path() -> str:
     return os.path.join(_bot_root_dir(), "data", "weekly_reports.json")
+
 
 def _load_weekly_subscriptions() -> dict[str, dict[str, Any]]:
     path = _weekly_store_path()
@@ -132,11 +145,13 @@ def _load_weekly_subscriptions() -> dict[str, dict[str, Any]]:
         pass
     return {}
 
+
 def _save_weekly_subscriptions(data: dict[str, dict[str, Any]]):
     path = _weekly_store_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+
 
 def parse_player_stats(ps: dict, total_rounds: int) -> PlayerMatchStats:
     """
@@ -167,25 +182,34 @@ def parse_player_stats(ps: dict, total_rounds: int) -> PlayerMatchStats:
 # EMBED BUILDERS
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _kd_str(s: PlayerMatchStats) -> str:
     kd = round(s.kills / max(s.deaths, 1), 2)
     return f"{s.kills}/{s.deaths}/{s.assists} ({kd})"
 
+
 def _mk_str(s: PlayerMatchStats) -> str:
     parts = []
-    if s.penta_kills:  parts.append(f"5K×{s.penta_kills}")
-    if s.quad_kills:   parts.append(f"4K×{s.quad_kills}")
-    if s.triple_kills: parts.append(f"3K×{s.triple_kills}")
-    if s.double_kills: parts.append(f"2K×{s.double_kills}")
+    if s.penta_kills:
+        parts.append(f"5K×{s.penta_kills}")
+    if s.quad_kills:
+        parts.append(f"4K×{s.quad_kills}")
+    if s.triple_kills:
+        parts.append(f"3K×{s.triple_kills}")
+    if s.double_kills:
+        parts.append(f"2K×{s.double_kills}")
     return "  ".join(parts) if parts else "—"
+
 
 def _clutch_str(s: PlayerMatchStats) -> str:
     if s.clutch_1v1 or s.clutch_1v2:
         return f"1v1: {s.clutch_1v1}W  |  1v2: {s.clutch_1v2}W"
     return "—"
 
-def build_match_embed(username: str, map_name: str, score: str,
-                       s: PlayerMatchStats) -> discord.Embed:
+
+def build_match_embed(
+    username: str, map_name: str, score: str, s: PlayerMatchStats
+) -> discord.Embed:
     r20 = calculate_rating_20(s)
     r21 = calculate_rating_21(s)
     r30 = calculate_rating_30_approx(s)
@@ -251,7 +275,7 @@ def build_match_embed(username: str, map_name: str, score: str,
 
     # ── Multi-kills & Clutches ───────────────────────────────────────────────
     embed.add_field(name="💥  Multi-kills", value=_mk_str(s), inline=True)
-    embed.add_field(name="🤝  Clutches",    value=_clutch_str(s), inline=True)
+    embed.add_field(name="🤝  Clutches", value=_clutch_str(s), inline=True)
 
     # ── Rating 3.0 breakdown ─────────────────────────────────────────────────
     embed.add_field(
@@ -275,8 +299,9 @@ def build_match_embed(username: str, map_name: str, score: str,
     return embed
 
 
-def build_summary_embed(username: str, n_maps: int,
-                         agg: PlayerMatchStats) -> discord.Embed:
+def build_summary_embed(
+    username: str, n_maps: int, agg: PlayerMatchStats
+) -> discord.Embed:
     r20 = calculate_rating_20(agg)
     r21 = calculate_rating_21(agg)
     r30 = calculate_rating_30_approx(agg)
@@ -326,11 +351,14 @@ def build_summary_embed(username: str, n_maps: int,
 # COG
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class StatsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.faceit = FaceitAPI(os.getenv("FACEIT_API_KEY", ""))
-        self.weekly_subscriptions: dict[str, dict[str, Any]] = _load_weekly_subscriptions()
+        self.weekly_subscriptions: dict[str, dict[str, Any]] = (
+            _load_weekly_subscriptions()
+        )
         self._weekly_last_sent: dict[str, str] = {}
         self.weekly_report_loop.start()
 
@@ -521,15 +549,21 @@ class StatsCog(commands.Cog):
         channel: Optional[discord.TextChannel] = None,
     ):
         if interaction.guild is None:
-            await interaction.response.send_message("❌  This command can only be used in a server.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌  This command can only be used in a server.", ephemeral=True
+            )
             return
         if not interaction.user.guild_permissions.manage_guild:
-            await interaction.response.send_message("❌  You need Manage Server permission.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌  You need Manage Server permission.", ephemeral=True
+            )
             return
 
         target_channel = channel or interaction.channel
         if not isinstance(target_channel, discord.TextChannel):
-            await interaction.response.send_message("❌  Weekly reports require a text channel.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌  Weekly reports require a text channel.", ephemeral=True
+            )
             return
 
         gid = str(interaction.guild.id)
@@ -552,19 +586,27 @@ class StatsCog(commands.Cog):
     )
     async def weeklyunsubscribe(self, interaction: discord.Interaction):
         if interaction.guild is None:
-            await interaction.response.send_message("❌  This command can only be used in a server.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌  This command can only be used in a server.", ephemeral=True
+            )
             return
         if not interaction.user.guild_permissions.manage_guild:
-            await interaction.response.send_message("❌  You need Manage Server permission.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌  You need Manage Server permission.", ephemeral=True
+            )
             return
 
         gid = str(interaction.guild.id)
         if gid in self.weekly_subscriptions:
             del self.weekly_subscriptions[gid]
             _save_weekly_subscriptions(self.weekly_subscriptions)
-            await interaction.response.send_message("✅  Weekly report disabled for this server.")
+            await interaction.response.send_message(
+                "✅  Weekly report disabled for this server."
+            )
             return
-        await interaction.response.send_message("ℹ️  Weekly report was not configured for this server.", ephemeral=True)
+        await interaction.response.send_message(
+            "ℹ️  Weekly report was not configured for this server.", ephemeral=True
+        )
 
     # ── /formula ──────────────────────────────────────────────────────────────
 
@@ -637,8 +679,9 @@ class StatsCog(commands.Cog):
             raise ValueError(f"Player `{username}` not found on FACEIT (CS2).")
         return player["player_id"], player.get("nickname", username)
 
-    async def _cmd_rating(self, interaction: discord.Interaction,
-                           username: str, maps: int):
+    async def _cmd_rating(
+        self, interaction: discord.Interaction, username: str, maps: int
+    ):
         player_id, nickname = await self._resolve_player(username)
         history = await self.faceit.get_match_history(player_id, limit=maps)
 
@@ -651,18 +694,22 @@ class StatsCog(commands.Cog):
         items = history["items"]
 
         if maps == 1:
-            await self._send_match(interaction, nickname, items[0]["match_id"],
-                                   player_id=player_id)
+            await self._send_match(
+                interaction, nickname, items[0]["match_id"], player_id=player_id
+            )
         else:
             await self._send_aggregated(interaction, nickname, player_id, items)
 
-    async def _collect_recent_player_maps(self, player_id: str,
-                                          limit: int) -> list[dict[str, Any]]:
+    async def _collect_recent_player_maps(
+        self, player_id: str, limit: int
+    ) -> list[dict[str, Any]]:
         history = await self.faceit.get_match_history(player_id, limit=limit)
         if not history or not history.get("items"):
             return []
 
-        match_ids = [it.get("match_id") for it in history["items"] if it.get("match_id")]
+        match_ids = [
+            it.get("match_id") for it in history["items"] if it.get("match_id")
+        ]
         if not match_ids:
             return []
 
@@ -700,22 +747,37 @@ class StatsCog(commands.Cog):
 
                 s = parse_player_stats(player_raw.get("player_stats", {}), total_rds)
                 r21 = calculate_rating_21(s)
-                rows.append({
-                    "match_id": mid,
-                    "map": _map_label(rs.get("Map", "Unknown")),
-                    "score": score,
-                    "stats": s,
-                    "r21": r21["rating"],
-                })
+                rows.append(
+                    {
+                        "match_id": mid,
+                        "map": _map_label(rs.get("Map", "Unknown")),
+                        "score": score,
+                        "stats": s,
+                        "r21": r21["rating"],
+                    }
+                )
 
         return rows
 
     def _aggregate_rows(self, rows: list[dict[str, Any]]) -> PlayerMatchStats:
-        agg = dict(kills=0, deaths=0, assists=0, total_rounds=0,
-                   adrs=[], kasts=[], hs_pcts=[],
-                   double_kills=0, triple_kills=0, quad_kills=0, penta_kills=0,
-                   clutch_1v1=0, clutch_1v2=0, headshots=0, mvps=0,
-                   flash_assists=0)
+        agg = dict(
+            kills=0,
+            deaths=0,
+            assists=0,
+            total_rounds=0,
+            adrs=[],
+            kasts=[],
+            hs_pcts=[],
+            double_kills=0,
+            triple_kills=0,
+            quad_kills=0,
+            penta_kills=0,
+            clutch_1v1=0,
+            clutch_1v2=0,
+            headshots=0,
+            mvps=0,
+            flash_assists=0,
+        )
 
         for row in rows:
             s: PlayerMatchStats = row["stats"]
@@ -758,8 +820,9 @@ class StatsCog(commands.Cog):
             mvps=agg["mvps"],
         )
 
-    async def _cmd_analyze(self, interaction: discord.Interaction,
-                           username: str, maps: int):
+    async def _cmd_analyze(
+        self, interaction: discord.Interaction, username: str, maps: int
+    ):
         player_id, nickname = await self._resolve_player(username)
         rows = await self._collect_recent_player_maps(player_id, maps)
         if not rows:
@@ -805,9 +868,7 @@ class StatsCog(commands.Cog):
         embed.add_field(
             name="🎯 Consistency + Role",
             value=(
-                f"Consistency: `{consistency}/100`\n"
-                f"Role: **{role}**\n"
-                f"{role_reason}"
+                f"Consistency: `{consistency}/100`\nRole: **{role}**\n{role_reason}"
             ),
             inline=False,
         )
@@ -822,8 +883,13 @@ class StatsCog(commands.Cog):
         embed.set_footer(text="Trend sparkline reads left→right (oldest→newest).")
         await interaction.followup.send(embed=embed)
 
-    async def _cmd_compare(self, interaction: discord.Interaction,
-                           username_a: str, username_b: str, maps: int):
+    async def _cmd_compare(
+        self,
+        interaction: discord.Interaction,
+        username_a: str,
+        username_b: str,
+        maps: int,
+    ):
         p1, n1 = await self._resolve_player(username_a)
         p2, n2 = await self._resolve_player(username_b)
 
@@ -832,10 +898,14 @@ class StatsCog(commands.Cog):
             self._collect_recent_player_maps(p2, maps),
         )
         if not rows1:
-            await interaction.followup.send(f"❌  No recent CS2 map stats found for `{n1}`.")
+            await interaction.followup.send(
+                f"❌  No recent CS2 map stats found for `{n1}`."
+            )
             return
         if not rows2:
-            await interaction.followup.send(f"❌  No recent CS2 map stats found for `{n2}`.")
+            await interaction.followup.send(
+                f"❌  No recent CS2 map stats found for `{n2}`."
+            )
             return
 
         agg1 = self._aggregate_rows(rows1)
@@ -893,8 +963,9 @@ class StatsCog(commands.Cog):
         )
         await interaction.followup.send(embed=embed)
 
-    async def _cmd_maps(self, interaction: discord.Interaction,
-                        username: str, maps: int):
+    async def _cmd_maps(
+        self, interaction: discord.Interaction, username: str, maps: int
+    ):
         player_id, nickname = await self._resolve_player(username)
         rows = await self._collect_recent_player_maps(player_id, maps)
         if not rows:
@@ -912,7 +983,9 @@ class StatsCog(commands.Cog):
             agg = self._aggregate_rows(g)
             avg = calculate_rating_21(agg)["rating"]
             kd = agg.kills / max(agg.deaths, 1)
-            lines.append((avg, f"{map_name:<10}  r2.1 {avg:.2f}  KD {kd:.2f}  ({len(g)} map)") )
+            lines.append(
+                (avg, f"{map_name:<10}  r2.1 {avg:.2f}  KD {kd:.2f}  ({len(g)} map)")
+            )
 
         lines.sort(key=lambda x: x[0], reverse=True)
         body = "\n".join(x[1] for x in lines[:15])
@@ -922,14 +995,22 @@ class StatsCog(commands.Cog):
             description=f"Computed from last {len(rows)} map(s)",
             color=0x2ECC71,
         )
-        embed.add_field(name="Per-map Rating 2.1", value=f"```\n{body}\n```", inline=False)
+        embed.add_field(
+            name="Per-map Rating 2.1", value=f"```\n{body}\n```", inline=False
+        )
         await interaction.followup.send(embed=embed)
 
-    async def _cmd_session(self, interaction: discord.Interaction,
-                           username: str, recent_maps: int,
-                           baseline_maps: int):
+    async def _cmd_session(
+        self,
+        interaction: discord.Interaction,
+        username: str,
+        recent_maps: int,
+        baseline_maps: int,
+    ):
         player_id, nickname = await self._resolve_player(username)
-        rows = await self._collect_recent_player_maps(player_id, recent_maps + baseline_maps)
+        rows = await self._collect_recent_player_maps(
+            player_id, recent_maps + baseline_maps
+        )
         if len(rows) < recent_maps + 2:
             await interaction.followup.send(
                 f"❌  Not enough recent data for `{nickname}`. Need at least {recent_maps + 2} maps."
@@ -937,7 +1018,7 @@ class StatsCog(commands.Cog):
             return
 
         recent = rows[:recent_maps]
-        baseline = rows[recent_maps:recent_maps + baseline_maps]
+        baseline = rows[recent_maps : recent_maps + baseline_maps]
         if len(baseline) < 3:
             await interaction.followup.send(
                 f"❌  Baseline sample too small for `{nickname}`. Try lower `recent_maps`."
@@ -947,7 +1028,9 @@ class StatsCog(commands.Cog):
         recent_avg = _avg_rating(recent)
         base_avg = _avg_rating(baseline)
         delta = recent_avg - base_avg
-        status = "🔥 Hot" if delta >= 0.08 else "🧊 Cold" if delta <= -0.08 else "➖ Stable"
+        status = (
+            "🔥 Hot" if delta >= 0.08 else "🧊 Cold" if delta <= -0.08 else "➖ Stable"
+        )
         recent_cons = _consistency_rows(recent)
         base_cons = _consistency_rows(baseline)
         confidence = min(100, int(round((len(recent) * 7 + len(baseline) * 3))))
@@ -980,11 +1063,14 @@ class StatsCog(commands.Cog):
             ),
             inline=True,
         )
-        embed.set_footer(text="Use this for form tracking, not absolute skill estimation.")
+        embed.set_footer(
+            text="Use this for form tracking, not absolute skill estimation."
+        )
         await interaction.followup.send(embed=embed)
 
-    async def _build_weekly_report_embed(self, username: str,
-                                         maps: int = 10) -> discord.Embed:
+    async def _build_weekly_report_embed(
+        self, username: str, maps: int = 10
+    ) -> discord.Embed:
         player_id, nickname = await self._resolve_player(username)
         rows = await self._collect_recent_player_maps(player_id, maps)
         if not rows:
@@ -1071,9 +1157,13 @@ class StatsCog(commands.Cog):
     async def _before_weekly_report_loop(self):
         await self.bot.wait_until_ready()
 
-    async def _send_match(self, interaction: discord.Interaction,
-                           username: str, match_id: str,
-                           player_id: Optional[str] = None):
+    async def _send_match(
+        self,
+        interaction: discord.Interaction,
+        username: str,
+        match_id: str,
+        player_id: Optional[str] = None,
+    ):
         if player_id is None:
             player_id, username = await self._resolve_player(username)
 
@@ -1088,10 +1178,10 @@ class StatsCog(commands.Cog):
         embeds: list[discord.Embed] = []
 
         for round_data in stats_data.get("rounds", []):
-            rs         = round_data.get("round_stats", {})
-            map_name   = rs.get("Map", "Unknown Map")
-            score      = rs.get("Score", "?-?")
-            total_rds  = _parse_score(score)
+            rs = round_data.get("round_stats", {})
+            map_name = rs.get("Map", "Unknown Map")
+            score = rs.get("Score", "?-?")
+            total_rds = _parse_score(score)
 
             # Find this player
             player_raw = None
@@ -1116,11 +1206,18 @@ class StatsCog(commands.Cog):
         # Discord allows max 10 embeds per message; a BO3 has at most 3 maps
         await interaction.followup.send(embeds=embeds[:5])
 
-    async def _send_aggregated(self, interaction: discord.Interaction,
-                                 username: str, player_id: str, items: list):
+    async def _send_aggregated(
+        self,
+        interaction: discord.Interaction,
+        username: str,
+        player_id: str,
+        items: list,
+    ):
         """Fetch stats for multiple matches and aggregate."""
         requested_match_ids = [it.get("match_id") for it in items if it.get("match_id")]
-        rows = await self._collect_recent_player_maps(player_id, len(requested_match_ids))
+        rows = await self._collect_recent_player_maps(
+            player_id, len(requested_match_ids)
+        )
         n = len(rows)
         if n == 0:
             await interaction.followup.send("❌  Could not retrieve stats for any map.")

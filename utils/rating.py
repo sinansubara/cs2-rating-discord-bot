@@ -27,16 +27,18 @@ References:
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # DATA CLASS
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class PlayerMatchStats:
     """All per-match stats needed for rating calculation."""
+
     # Core (always available from FACEIT API)
     kills: int
     deaths: int
@@ -44,8 +46,8 @@ class PlayerMatchStats:
     total_rounds: int
 
     # Semi-reliable (CS2 matches from ~2024+)
-    adr: float = 0.0     # Average Damage per Round
-    kast: float = 0.0    # % of rounds with Kill/Assist/Survived/Traded (0-100)
+    adr: float = 0.0  # Average Damage per Round
+    kast: float = 0.0  # % of rounds with Kill/Assist/Survived/Traded (0-100)
 
     # Multi-kills
     double_kills: int = 0
@@ -59,7 +61,7 @@ class PlayerMatchStats:
 
     # Misc
     headshots: int = 0
-    hs_pct: float = 0.0   # 0-100
+    hs_pct: float = 0.0  # 0-100
     flash_assists: int = 0
     mvps: int = 0
 
@@ -83,6 +85,7 @@ _CAL_30 = _CAL_21
 # HELPERS
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _clamp(v: float, lo: float = 0.0, hi: float = 3.5) -> float:
     return max(lo, min(hi, v))
 
@@ -90,13 +93,16 @@ def _clamp(v: float, lo: float = 0.0, hi: float = 3.5) -> float:
 def _kpr(s: PlayerMatchStats) -> float:
     return s.kills / max(s.total_rounds, 1)
 
+
 def _dpr(s: PlayerMatchStats) -> float:
     return s.deaths / max(s.total_rounds, 1)
+
 
 def _mkpr(s: PlayerMatchStats) -> float:
     """Multi-kill rounds per round (rounds where player got 2+ kills)."""
     mk = s.double_kills + s.triple_kills + s.quad_kills + s.penta_kills
     return mk / max(s.total_rounds, 1)
+
 
 def _impact(kpr: float, mkpr: float) -> float:
     """
@@ -106,30 +112,37 @@ def _impact(kpr: float, mkpr: float) -> float:
     """
     return 2.13 * kpr + 2.63 * mkpr - 0.41
 
-def _base_rating(kast_pct: float, kpr: float, dpr: float,
-                  impact: float, adr: float) -> float:
+
+def _base_rating(
+    kast_pct: float, kpr: float, dpr: float, impact: float, adr: float
+) -> float:
     """
     Community reverse-engineered Rating 2.0 formula.
     Source: https://github.com/floxay/python-hltv (and community analysis)
 
     Rating = 0.0073*KAST + 0.3591*KPR - 0.5329*DPR + 0.2372*Impact + 0.0032*ADR + 0.1587
     """
-    return (0.0073 * kast_pct
-            + 0.3591 * kpr
-            - 0.5329 * dpr
-            + 0.2372 * impact
-            + 0.0032 * adr
-            + 0.1587)
+    return (
+        0.0073 * kast_pct
+        + 0.3591 * kpr
+        - 0.5329 * dpr
+        + 0.2372 * impact
+        + 0.0032 * adr
+        + 0.1587
+    )
 
-def _sub_ratings(kpr: float, dpr: float, adr: float,
-                  kast_pct: float, cal: dict) -> dict:
+
+def _sub_ratings(
+    kpr: float, dpr: float, adr: float, kast_pct: float, cal: dict
+) -> dict:
     """Normalised sub-rating components (1.00 = average)."""
     return {
-        "kill":     round(kpr / cal["avg_kpr"], 3),
+        "kill": round(kpr / cal["avg_kpr"], 3),
         "survival": round((1 - dpr) / (1 - cal["avg_dpr"]), 3),
-        "damage":   round(adr / cal["avg_adr"], 3),
-        "kast":     round((kast_pct / 100) / (cal["avg_kast"] / 100), 3),
+        "damage": round(adr / cal["avg_adr"], 3),
+        "kast": round((kast_pct / 100) / (cal["avg_kast"] / 100), 3),
     }
+
 
 def _estimate_adr(s: PlayerMatchStats) -> float:
     """Fallback ADR estimate when not provided by API."""
@@ -137,12 +150,15 @@ def _estimate_adr(s: PlayerMatchStats) -> float:
     raw = (s.kills * 82 + s.assists * 30) / max(s.total_rounds, 1)
     return _clamp(raw, 0, 160)
 
+
 def _estimate_kast(s: PlayerMatchStats) -> float:
     """
     Fallback KAST estimate when not provided by API.
     Rough model: KAST ≈ at least (K+A contribution) clipped to [45, 92].
     """
-    contrib = (s.kills + s.assists * 0.5 + s.total_rounds * 0.5) / max(s.total_rounds, 1)
+    contrib = (s.kills + s.assists * 0.5 + s.total_rounds * 0.5) / max(
+        s.total_rounds, 1
+    )
     return _clamp(contrib * 75, 45, 92)
 
 
@@ -150,29 +166,30 @@ def _estimate_kast(s: PlayerMatchStats) -> float:
 # PUBLIC CALCULATION FUNCTIONS
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def calculate_rating_20(s: PlayerMatchStats) -> dict:
     """Rating 2.0 — CS:GO era calibration."""
     cal = _CAL_20
     adr = s.adr if s.adr > 0 else _estimate_adr(s)
     kast = s.kast if s.kast > 0 else _estimate_kast(s)
 
-    kpr  = _kpr(s)
-    dpr  = _dpr(s)
+    kpr = _kpr(s)
+    dpr = _dpr(s)
     mkpr = _mkpr(s)
-    imp  = _impact(kpr, mkpr)
-    r    = _clamp(_base_rating(kast, kpr, dpr, imp, adr))
-    sub  = _sub_ratings(kpr, dpr, adr, kast, cal)
+    imp = _impact(kpr, mkpr)
+    r = _clamp(_base_rating(kast, kpr, dpr, imp, adr))
+    sub = _sub_ratings(kpr, dpr, adr, kast, cal)
 
     return {
-        "version":      "2.0",
-        "rating":       round(r, 2),
-        "kpr":          round(kpr, 3),
-        "dpr":          round(dpr, 3),
-        "adr":          round(adr, 1),
-        "kast":         round(kast, 1),
-        "impact":       round(imp, 3),
-        "sub_ratings":  sub,
-        "note":         "CS:GO era averages",
+        "version": "2.0",
+        "rating": round(r, 2),
+        "kpr": round(kpr, 3),
+        "dpr": round(dpr, 3),
+        "adr": round(adr, 1),
+        "kast": round(kast, 1),
+        "impact": round(imp, 3),
+        "sub_ratings": sub,
+        "note": "CS:GO era averages",
     }
 
 
@@ -185,10 +202,10 @@ def calculate_rating_21(s: PlayerMatchStats) -> dict:
     adr = s.adr if s.adr > 0 else _estimate_adr(s)
     kast = s.kast if s.kast > 0 else _estimate_kast(s)
 
-    kpr  = _kpr(s)
-    dpr  = _dpr(s)
+    kpr = _kpr(s)
+    dpr = _dpr(s)
     mkpr = _mkpr(s)
-    imp  = _impact(kpr, mkpr)
+    imp = _impact(kpr, mkpr)
 
     # Saver penalty: HLTV 2.1 punishes saving in lost rounds.
     # Without round-outcome data we approximate: very low KAST + very low DPR
@@ -199,20 +216,20 @@ def calculate_rating_21(s: PlayerMatchStats) -> dict:
     elif kast < 65 and dpr < 0.25:
         save_penalty = 0.02
 
-    r   = _clamp(_base_rating(kast, kpr, dpr, imp, adr) - save_penalty)
+    r = _clamp(_base_rating(kast, kpr, dpr, imp, adr) - save_penalty)
     sub = _sub_ratings(kpr, dpr, adr, kast, cal)
 
     return {
-        "version":      "2.1",
-        "rating":       round(r, 2),
-        "kpr":          round(kpr, 3),
-        "dpr":          round(dpr, 3),
-        "adr":          round(adr, 1),
-        "kast":         round(kast, 1),
-        "impact":       round(imp, 3),
-        "sub_ratings":  sub,
+        "version": "2.1",
+        "rating": round(r, 2),
+        "kpr": round(kpr, 3),
+        "dpr": round(dpr, 3),
+        "adr": round(adr, 1),
+        "kast": round(kast, 1),
+        "impact": round(imp, 3),
+        "sub_ratings": sub,
         "save_penalty": round(save_penalty, 3),
-        "note":         "CS2 MR12 averages; save penalty applied if applicable",
+        "note": "CS2 MR12 averages; save penalty applied if applicable",
     }
 
 
@@ -238,18 +255,22 @@ def calculate_rating_30_approx(s: PlayerMatchStats) -> dict:
     This is NOT the real HLTV 3.0. It's a structural approximation.
     """
     base = calculate_rating_21(s)
-    adr  = base["adr"]
-    kpr  = base["kpr"]
+    adr = base["adr"]
+    kpr = base["kpr"]
 
     # --- Eco adjustment ---
     if s.kills > 0 and s.total_rounds > 0:
         adr_per_kill = adr / max(kpr, 0.01) / 100
-        hs_ratio     = s.hs_pct / 100
+        hs_ratio = s.hs_pct / 100
         # High HS% relative to ADR suggests eco-padding → slight penalty
         # Low HS% with high ADR suggests clean rifle kills → slight bonus
-        eco_factor = _clamp(1.0 + 0.06 * (1 - hs_ratio) * (1 - min(adr_per_kill, 1))
-                                 - 0.03 * hs_ratio * (1 - min(adr_per_kill, 1)),
-                            0.94, 1.06)
+        eco_factor = _clamp(
+            1.0
+            + 0.06 * (1 - hs_ratio) * (1 - min(adr_per_kill, 1))
+            - 0.03 * hs_ratio * (1 - min(adr_per_kill, 1)),
+            0.94,
+            1.06,
+        )
     else:
         eco_factor = 1.0
 
@@ -258,24 +279,26 @@ def calculate_rating_30_approx(s: PlayerMatchStats) -> dict:
     # Clutch wins = winning from disadvantage = very high swing
     clutch_bonus = (s.clutch_1v1 * 0.025 + s.clutch_1v2 * 0.05) / rounds * rounds * 0.4
     # Multi-kill bonus — shared credit in real 3.0, so we halve
-    mk_bonus = (s.triple_kills * 0.015 + s.quad_kills * 0.03 + s.penta_kills * 0.06) * 0.5
+    mk_bonus = (
+        s.triple_kills * 0.015 + s.quad_kills * 0.03 + s.penta_kills * 0.06
+    ) * 0.5
     swing_bonus = _clamp(clutch_bonus + mk_bonus, -0.08, 0.12)
 
     r30 = _clamp(base["rating"] * eco_factor + swing_bonus)
 
     return {
-        "version":      "≈3.0",
-        "rating":       round(r30, 2),
-        "kpr":          base["kpr"],
-        "dpr":          base["dpr"],
-        "adr":          base["adr"],
-        "kast":         base["kast"],
-        "impact":       base["impact"],
-        "sub_ratings":  base["sub_ratings"],
-        "eco_factor":   round(eco_factor, 3),
-        "swing_bonus":  round(swing_bonus, 3),
-        "base_21":      base["rating"],
-        "note":         "Approximate — Round Swing estimated from clutches/multi-kills.",
+        "version": "≈3.0",
+        "rating": round(r30, 2),
+        "kpr": base["kpr"],
+        "dpr": base["dpr"],
+        "adr": base["adr"],
+        "kast": base["kast"],
+        "impact": base["impact"],
+        "sub_ratings": base["sub_ratings"],
+        "eco_factor": round(eco_factor, 3),
+        "swing_bonus": round(swing_bonus, 3),
+        "base_21": base["rating"],
+        "note": "Approximate — Round Swing estimated from clutches/multi-kills.",
     }
 
 
@@ -283,22 +306,35 @@ def calculate_rating_30_approx(s: PlayerMatchStats) -> dict:
 # UI HELPERS
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def rating_color(r: float) -> int:
     """Discord embed hex color based on 2.1 rating."""
-    if r >= 1.30: return 0x00C851   # Bright green — elite
-    if r >= 1.15: return 0x4CAF50   # Green — great
-    if r >= 1.05: return 0x8BC34A   # Light green — good
-    if r >= 0.95: return 0xFFEB3B   # Yellow — average
-    if r >= 0.85: return 0xFF9800   # Orange — below average
-    return 0xF44336                  # Red — poor
+    if r >= 1.30:
+        return 0x00C851  # Bright green — elite
+    if r >= 1.15:
+        return 0x4CAF50  # Green — great
+    if r >= 1.05:
+        return 0x8BC34A  # Light green — good
+    if r >= 0.95:
+        return 0xFFEB3B  # Yellow — average
+    if r >= 0.85:
+        return 0xFF9800  # Orange — below average
+    return 0xF44336  # Red — poor
+
 
 def rating_label(r: float) -> str:
-    if r >= 1.30: return "🟢 Elite"
-    if r >= 1.15: return "🟢 Great"
-    if r >= 1.05: return "🟡 Good"
-    if r >= 0.95: return "🟡 Average"
-    if r >= 0.85: return "🟠 Below Avg"
+    if r >= 1.30:
+        return "🟢 Elite"
+    if r >= 1.15:
+        return "🟢 Great"
+    if r >= 1.05:
+        return "🟡 Good"
+    if r >= 0.95:
+        return "🟡 Average"
+    if r >= 0.85:
+        return "🟠 Below Avg"
     return "🔴 Poor"
+
 
 def bar(value: float, lo: float = 0.7, hi: float = 1.3, width: int = 8) -> str:
     """ASCII progress bar normalised between lo and hi."""

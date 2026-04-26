@@ -9,7 +9,6 @@ Setup:
   3. python bot.py
 """
 
-import asyncio
 import os
 import discord
 from discord.ext import commands
@@ -17,15 +16,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DISCORD_TOKEN   = os.getenv("DISCORD_TOKEN", "")
-GUILD_ID_STR    = os.getenv("GUILD_ID", "")        # optional: faster syncs during dev
-TEST_GUILD      = discord.Object(id=int(GUILD_ID_STR)) if GUILD_ID_STR else None
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
+GUILD_ID_STR = os.getenv("GUILD_ID", "")  # optional: faster syncs during dev
+TEST_GUILD = discord.Object(id=int(GUILD_ID_STR)) if GUILD_ID_STR else None
 
 
 class RatingBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.none()
-        intents.guilds = True          # needed to see servers
+        intents.guilds = True  # needed to see servers
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):

@@ -54,9 +54,9 @@ class FaceitAPI:
 
     # ── Match history ────────────────────────────────────────────────────────
 
-    async def get_match_history(self, player_id: str,
-                                 limit: int = 1,
-                                 offset: int = 0) -> Optional[dict]:
+    async def get_match_history(
+        self, player_id: str, limit: int = 1, offset: int = 0
+    ) -> Optional[dict]:
         return await self._get(
             f"/players/{player_id}/history",
             params={"game": "cs2", "limit": limit, "offset": offset},
