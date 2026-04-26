@@ -9,12 +9,23 @@ Setup:
   3. python bot.py
 """
 
+import logging
 import os
+
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+class _IgnoreMessageContentWarning(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "Privileged message content intent is missing" not in record.getMessage()
+
+
+# Slash-only bot: silence the prefix-commands warning without enabling message content.
+logging.getLogger("discord.ext.commands.bot").addFilter(_IgnoreMessageContentWarning())
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 GUILD_ID_STR = os.getenv("GUILD_ID", "")  # optional: faster syncs during dev
