@@ -101,7 +101,7 @@ make run-skip
 
 ## Development
 
-- Python: 3.11 (see .python-version)
+- Python: 3.13 (see .python-version)
 - Dev deps: `pip install -r requirements.txt -r requirements-dev.txt`
 - Lint: `ruff check .`
 

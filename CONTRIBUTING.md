@@ -4,7 +4,7 @@ Thanks for contributing!
 
 ## Development setup
 
-1. Install Python 3.11 (see .python-version).
+1. Install Python 3.13 (see .python-version).
 2. Create a virtual environment:
 
 ```bash
