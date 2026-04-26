@@ -9,37 +9,33 @@ Setup:
   3. python bot.py
 """
 
-import logging
 import os
 
 import discord
-from discord.ext import commands
+from discord import app_commands
 from dotenv import load_dotenv
 
+from cogs.stats import StatsCog
+
 load_dotenv()
-
-
-class _IgnoreMessageContentWarning(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        return "Privileged message content intent is missing" not in record.getMessage()
-
-
-# Slash-only bot: silence the prefix-commands warning without enabling message content.
-logging.getLogger("discord.ext.commands.bot").addFilter(_IgnoreMessageContentWarning())
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 GUILD_ID_STR = os.getenv("GUILD_ID", "")  # optional: faster syncs during dev
 TEST_GUILD = discord.Object(id=int(GUILD_ID_STR)) if GUILD_ID_STR else None
 
 
-class RatingBot(commands.Bot):
+class RatingBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.none()
         intents.guilds = True  # needed to see servers
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+        self.stats_cog: StatsCog | None = None
 
     async def setup_hook(self):
-        await self.load_extension("cogs.stats")
+        self.stats_cog = StatsCog(self)
+        for command in self.stats_cog.get_app_commands():
+            self.tree.add_command(command)
 
         if TEST_GUILD:
             # Sync to a specific guild instantly (dev mode)
@@ -59,9 +55,6 @@ class RatingBot(commands.Bot):
                 name="CS2 FACEIT matches",
             )
         )
-
-    async def on_command_error(self, ctx, error):
-        pass  # Suppress default error messages for prefix commands
 
 
 bot = RatingBot()
