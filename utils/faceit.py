@@ -1,6 +1,7 @@
 """
 Async FACEIT Data API v4 wrapper.
-Docs: https://developers.faceit.com/docs/tools/data-api
+Docs (outdated): https://developers.faceit.com/docs/tools/data-api
+New docs URL: https://docs.faceit.com/docs/data-api/data/
 """
 
 from __future__ import annotations
